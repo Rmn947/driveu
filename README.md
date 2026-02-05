@@ -1,4 +1,4 @@
-# 🚗 Car Rental Damage Detection System
+# DriveU
 
 A Streamlit web application for car rental companies to compare pickup and drop-off vehicle images with automated scratch detection using YOLO and optional AI analysis with Google Gemini.
 

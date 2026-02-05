@@ -1,52 +1,20 @@
+"""
+DriveU - Car Rental Image Comparison System
+"""
+
 import streamlit as st
 from pathlib import Path
 import os
 import tempfile
 from PIL import Image
-import io
 from typing import Dict, List, Tuple, Optional
-import requests
-
-# Get config - priority: Streamlit secrets > config.py > environment variables
-def get_config():
-    """Get configuration from various sources."""
-    api_key = ""
-    model = "gemini-2.5-flash"
-    model_url = ""
-    
-    # Try Streamlit secrets first (for cloud deployment)
-    try:
-        api_key = st.secrets.get("GEMINI_API_KEY", "")
-        model = st.secrets.get("GEMINI_MODEL", "gemini-2.5-flash")
-        model_url = st.secrets.get("YOLO_MODEL_URL", "")
-    except:
-        pass
-    
-    # Fall back to config.py
-    if not api_key:
-        try:
-            from config import GEMINI_API_KEY, GEMINI_MODEL
-            api_key = GEMINI_API_KEY
-            model = GEMINI_MODEL
-        except ImportError:
-            pass
-    
-    # Fall back to environment variables
-    if not api_key:
-        api_key = os.environ.get("GEMINI_API_KEY", "")
-        model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
-        model_url = os.environ.get("YOLO_MODEL_URL", "")
-    
-    return api_key, model, model_url
-
-GEMINI_API_KEY, GEMINI_MODEL, YOLO_MODEL_URL = get_config()
 
 # Page configuration
 st.set_page_config(
-    page_title="Car Damage Detection System",
+    page_title="DriveU",
     page_icon="🚗",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
 # Custom CSS
@@ -83,6 +51,15 @@ st.markdown("""
         display: inline-block;
         margin-bottom: 10px;
     }
+    .processed-label {
+        background-color: #9C27B0;
+        color: white;
+        padding: 5px 15px;
+        border-radius: 5px;
+        font-weight: bold;
+        display: inline-block;
+        margin-bottom: 10px;
+    }
     .category-title {
         font-size: 1.3rem;
         font-weight: bold;
@@ -93,59 +70,31 @@ st.markdown("""
         border-left: 4px solid #1E88E5;
         border-radius: 0 5px 5px 0;
     }
-    .gemini-result {
-        background-color: #f0f7ff;
-        border: 1px solid #b3d4fc;
-        border-radius: 10px;
-        padding: 15px;
-        margin-top: 10px;
-    }
 </style>
 """, unsafe_allow_html=True)
 
 
-def download_model(url: str, save_path: Path) -> bool:
-    """Download YOLO model from URL."""
-    try:
-        with st.spinner("Downloading YOLO model... This may take a minute."):
-            response = requests.get(url, stream=True)
-            response.raise_for_status()
-            with open(save_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-        return True
-    except Exception as e:
-        st.error(f"Failed to download model: {e}")
-        return False
-
-
 @st.cache_resource
-def load_yolo_model():
-    """Load the YOLO model for scratch detection."""
+def load_model():
+    """Load the segmentation model."""
     try:
         from ultralytics import YOLO
         model_path = Path(__file__).parent / "yolo26-seg.pt"
-        
-        # If model doesn't exist locally, try to download from URL
-        if not model_path.exists():
-            if YOLO_MODEL_URL:
-                if not download_model(YOLO_MODEL_URL, model_path):
-                    return None
-            else:
-                st.error(f"YOLO model not found. Please upload yolo26-seg.pt or set YOLO_MODEL_URL in secrets.")
-                return None
-        
-        return YOLO(str(model_path))
+        if model_path.exists():
+            return YOLO(str(model_path))
+        else:
+            st.error("Model file not found.")
+            return None
     except ImportError:
-        st.error("Ultralytics not installed. Run: `pip install ultralytics`")
+        st.error("Required package not installed. Run: `pip install ultralytics`")
         return None
     except Exception as e:
-        st.error(f"Error loading YOLO model: {e}")
+        st.error(f"Error loading model: {e}")
         return None
 
 
-def process_image_with_yolo(model, image_path: str, output_path: str) -> Optional[str]:
-    """Process an image with YOLO model and return the output path."""
+def process_image(model, image_path: str, output_path: str) -> Optional[str]:
+    """Process an image and return the output path."""
     try:
         results = model.predict(source=image_path, verbose=False)
         if results:
@@ -161,19 +110,16 @@ def extract_category_from_filename(filename: str) -> Tuple[Optional[str], Option
     """Extract the category and type (pickup/drop) from filename."""
     filename_lower = filename.lower()
     
-    # Check for pickup or drop prefix
     if filename_lower.startswith("pickup_"):
         img_type = "pickup"
-        remainder = filename_lower[7:]  # Remove "pickup_"
+        remainder = filename_lower[7:]
     elif filename_lower.startswith("drop_"):
         img_type = "drop"
-        remainder = filename_lower[5:]  # Remove "drop_"
+        remainder = filename_lower[5:]
     else:
         return None, None
     
-    # Remove file extension
     remainder = Path(remainder).stem
-    
     return img_type, remainder
 
 
@@ -195,82 +141,15 @@ def pair_images(uploaded_files: List) -> Dict[str, Dict[str, any]]:
     return pairs
 
 
-def analyze_with_gemini(pickup_image: Image.Image, drop_image: Image.Image, category: str) -> str:
-    """Send images to Gemini for scratch detection analysis."""
-    api_key = GEMINI_API_KEY
-    
-    if not api_key or api_key == "your-gemini-api-key-here":
-        return "❌ Please set your Gemini API key in `config.py`"
-    
-    try:
-        import google.generativeai as genai
-        
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(GEMINI_MODEL)
-        
-        prompt = f"""You are an expert car damage assessor for a car rental company. 
-
-I am providing you with two images of the same part of a car: "{category.replace('_', ' ')}".
-
-**Image 1**: PICKUP image (when the car was rented out)
-**Image 2**: DROP-OFF image (when the car was returned)
-
-Please analyze both images carefully and provide:
-
-1. **New Damage Found**: List any NEW scratches, dents, or damage that appeared between pickup and drop-off.
-
-2. **Damage Details** (if any):
-   - Location on the car part
-   - Type (scratch, dent, scuff, crack, etc.)
-   - Severity (minor/moderate/severe)
-
-3. **Condition Summary**: Brief comparison of before vs after condition.
-
-4. **Recommendation**: Whether repair is needed and urgency level.
-
-Be concise and professional."""
-
-        response = model.generate_content([prompt, pickup_image, drop_image])
-        return response.text
-        
-    except ImportError:
-        return "❌ Install google-generativeai: `pip install google-generativeai`"
-    except Exception as e:
-        return f"❌ Gemini Error: {str(e)}"
-
-
 def main():
     # Header
-    st.markdown('<h1 class="main-header">🚗 Car Rental Damage Detection</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">Upload pickup & drop-off photos → Auto-pair → YOLO Detection → AI Analysis</p>', unsafe_allow_html=True)
-    
-    # Sidebar
-    with st.sidebar:
-        st.header("📋 How to Use")
-        st.markdown("""
-        1. **Upload** 10-20 car photos
-        2. Images auto-pair by name
-        3. Click **Process with YOLO**
-        4. Optionally use **Gemini AI** analysis
-        """)
-        
-        st.markdown("---")
-        
-        st.header("📝 Naming Format")
-        st.code("pickup_car_front.jpg\ndrop_car_front.jpg")
-        
-        st.markdown("---")
-        
-        st.header("⚙️ Config Status")
-        if GEMINI_API_KEY and GEMINI_API_KEY != "your-gemini-api-key-here":
-            st.success(f"✅ Gemini API configured ({GEMINI_MODEL})")
-        else:
-            st.warning("⚠️ Set API key in config.py")
+    st.markdown('<h1 class="main-header">DriveU</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Upload pickup & drop-off photos for comparison</p>', unsafe_allow_html=True)
     
     # File uploader
     st.header("📤 Upload Car Images")
     uploaded_files = st.file_uploader(
-        "Upload all pickup and drop-off images (10-20 photos)",
+        "Upload all pickup and drop-off images",
         type=['jpg', 'jpeg', 'png', 'bmp', 'webp'],
         accept_multiple_files=True,
         help="Name format: pickup_[part].jpg and drop_[part].jpg"
@@ -313,19 +192,19 @@ def main():
         st.markdown("---")
         
         if complete_pairs:
-            # Process buttons
+            # Process button
             col1, col2 = st.columns(2)
             with col1:
-                process_btn = st.button("🔍 Process All with YOLO", type="primary")
+                process_btn = st.button("🔍 Process", type="primary")
             with col2:
                 if st.button("🗑️ Clear Results"):
                     if 'processed' in st.session_state:
                         del st.session_state['processed']
                     st.rerun()
             
-            # YOLO Processing
+            # Processing
             if process_btn:
-                model = load_yolo_model()
+                model = load_model()
                 if model:
                     st.session_state['processed'] = {}
                     
@@ -353,7 +232,7 @@ def main():
                                 with open(input_path, 'wb') as f:
                                     f.write(img_data)
                                 
-                                result = process_image_with_yolo(model, input_path, output_path)
+                                result = process_image(model, input_path, output_path)
                                 
                                 if result and os.path.exists(result):
                                     st.session_state['processed'][category][img_type] = Image.open(result).copy()
@@ -364,17 +243,17 @@ def main():
                         progress.empty()
                         status.empty()
                     
-                    st.success("✅ YOLO processing complete!")
+                    st.success("✅ Processing complete!")
             
             # Display pairs
-            st.header("🔄 Image Pairs & Comparison")
+            st.header("🔄 Image Comparison")
             
             for category, pair in complete_pairs.items():
                 category_display = category.replace("_", " ").title()
                 
                 st.markdown(f'<div class="category-title">📸 {category_display}</div>', unsafe_allow_html=True)
                 
-                # Load images
+                # Load original images
                 pair['pickup'].seek(0)
                 pair['drop'].seek(0)
                 pickup_img = Image.open(pair['pickup'])
@@ -386,35 +265,26 @@ def main():
                                 st.session_state['processed'][category]['pickup'] and
                                 st.session_state['processed'][category]['drop'])
                 
-                # Tabs for views
-                tab1, tab2, tab3 = st.tabs(["📷 Original", "🔍 YOLO Result", "🤖 Gemini AI"])
+                # Original images row
+                st.markdown("**Original Images:**")
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.markdown('<span class="pickup-label">📥 PICKUP</span>', unsafe_allow_html=True)
+                    st.image(pickup_img, use_container_width=True)
+                with c2:
+                    st.markdown('<span class="drop-label">📤 DROP-OFF</span>', unsafe_allow_html=True)
+                    st.image(drop_img, use_container_width=True)
                 
-                with tab1:
+                # Processed images row (if available)
+                if has_processed:
+                    st.markdown("**Processed Images:**")
                     c1, c2 = st.columns(2)
                     with c1:
-                        st.markdown('<span class="pickup-label">📥 PICKUP</span>', unsafe_allow_html=True)
-                        st.image(pickup_img, width="stretch")
+                        st.markdown('<span class="processed-label">📥 PICKUP (Processed)</span>', unsafe_allow_html=True)
+                        st.image(st.session_state['processed'][category]['pickup'], use_container_width=True)
                     with c2:
-                        st.markdown('<span class="drop-label">📤 DROP-OFF</span>', unsafe_allow_html=True)
-                        st.image(drop_img, width="stretch")
-                
-                with tab2:
-                    if has_processed:
-                        c1, c2 = st.columns(2)
-                        with c1:
-                            st.markdown('<span class="pickup-label">📥 PICKUP (YOLO)</span>', unsafe_allow_html=True)
-                            st.image(st.session_state['processed'][category]['pickup'], width="stretch")
-                        with c2:
-                            st.markdown('<span class="drop-label">📤 DROP-OFF (YOLO)</span>', unsafe_allow_html=True)
-                            st.image(st.session_state['processed'][category]['drop'], width="stretch")
-                    else:
-                        st.info("👆 Click 'Process All with YOLO' to detect scratches")
-                
-                with tab3:
-                    if st.button(f"🤖 Analyze with Gemini", key=f"gem_{category}"):
-                        with st.spinner("Analyzing with Gemini AI..."):
-                            result = analyze_with_gemini(pickup_img, drop_img, category)
-                        st.markdown(result)
+                        st.markdown('<span class="processed-label">📤 DROP-OFF (Processed)</span>', unsafe_allow_html=True)
+                        st.image(st.session_state['processed'][category]['drop'], use_container_width=True)
                 
                 st.markdown("---")
         
@@ -434,10 +304,6 @@ def main():
             | `pickup_car_left_front_door.jpg` | `drop_car_left_front_door.jpg` |
             | ... | ... |
             """)
-    
-    # Footer
-    st.markdown("---")
-    st.caption("🚗 Car Rental Damage Detection | YOLO + Gemini AI")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-# Car Rental Damage Detection System - Dependencies
+# DriveU - Car Rental Image Comparison System
 
 # Web framework
 streamlit>=1.28.0
@@ -6,15 +6,9 @@ streamlit>=1.28.0
 # Image processing
 Pillow>=10.0.0
 
-# YOLO model for scratch detection
+# Segmentation model
 ultralytics>=8.0.0
-
-# Google Gemini AI (optional - for AI-powered analysis)
-google-generativeai>=0.3.0
 
 # Additional dependencies
 opencv-python-headless>=4.8.0
 numpy>=1.24.0
-
-# HTTP requests (for model download)
-requests>=2.31.0
